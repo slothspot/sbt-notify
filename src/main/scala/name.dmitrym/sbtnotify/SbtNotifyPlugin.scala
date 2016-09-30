@@ -17,12 +17,10 @@ package name.dmitrym.sbtnotify
 import sbt._
 import Keys._
 
+import scala.annotation.tailrec
 import scala.sys.process.Process
 
 object SbtNotifyPlugin extends AutoPlugin {
-  lazy val successPair: (Char, String) = ('\u2714', "Glass")
-  lazy val failPair: (Char, String) = ('\u2717', "Glass")
-
   object autoImport {
     val nt = taskKey[Unit]("Compile or test with result notification")
   }
@@ -39,41 +37,49 @@ object SbtNotifyPlugin extends AutoPlugin {
       ))
 
   lazy val ntCompileTask = Def.task {
-    val prjName = name.value
-    val prjAction = "Compile"
-    val (prjResultMark, prjResultSound) = compile.result.value match {
-      case Inc(inc: Incomplete) => failPair
-      case Value(v) => successPair
-    }
-    showNotification(prjName, prjAction, prjResultSound, prjResultMark)
+    executeTasks(name.value, Seq(("Compile", compile.result.value)))
   }
 
   lazy val ntTestTask = Def.task {
-    val prjName = name.value
-    compile.result.value match {
-      case Inc(inc: Incomplete) =>
-        showNotification(prjName, "Compile", failPair._2, failPair._1)
-      case Value(v) =>
-        test.result.value match {
-          case Inc(inc: Incomplete) =>
-            showNotification(prjName, "Test", failPair._2, failPair._1)
-          case Value(v) =>
-            showNotification(prjName, "Test", successPair._2, successPair._1)
+    executeTasks(name.value,
+                 Seq(
+                   ("Compile", compile.result.value),
+                   ("Test", test.result.value)
+                 ))
+  }
+
+  @tailrec
+  private[this] def executeTasks(project: String,
+                                 tasks: Seq[(String, Result[_])]): Unit = {
+    tasks match {
+      case h :: Nil => // Last task in queue
+        h._2 match {
+          case _: Inc => notifyFail(project, h._1)
+          case _: Value[_] => notifySuccess(project, h._1)
+        }
+      case h :: t => // Something in queue
+        h._2 match {
+          case _: Inc => notifyFail(project, h._1)
+          case _: Value[_] => executeTasks(project, t)
         }
     }
   }
 
-  private[this] def showNotification(prjName: String,
-                                     prjAction: String,
-                                     prjSound: String,
-                                     prjResultMark: Char): Unit = {
+  lazy val successPair: (Char, String) = ('\u2714', "Glass")
+  lazy val failPair: (Char, String) = ('\u2717', "Glass")
+
+  private[this] def notify(successful: Boolean)(project: String,
+                                                action: String): Unit = {
+    val (resultMark, resultSound) = if (successful) successPair else failPair
     Process(
       Seq(
         "osascript",
         "-s",
         "o",
         "-e",
-        "display notification \"" + prjAction + " completed!\" with title \"" + prjResultMark + " " + prjAction + "\" subtitle \"" + prjName + "\" sound name \"" + prjSound + "\"")
+        "display notification \"" + action + " completed!\" with title \"" + resultMark + " " + action + "\" subtitle \"" + project + "\" sound name \"" + resultSound + "\"")
     ).!
   }
+  private[this] def notifySuccess = notify(successful = true) _
+  private[this] def notifyFail = notify(successful = false) _
 }
