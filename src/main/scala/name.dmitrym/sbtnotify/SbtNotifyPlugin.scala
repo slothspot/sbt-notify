@@ -14,6 +14,8 @@
 
 package name.dmitrym.sbtnotify
 
+import java.io.IOException
+
 import sbt._
 import Keys._
 
@@ -37,10 +39,12 @@ object SbtNotifyPlugin extends AutoPlugin {
       ))
 
   lazy val ntCompileTask = Def.task {
+    implicit val l = streams.value.log
     executeTasks(name.value, Seq(("Compile", compile.result.value)))
   }
 
   lazy val ntTestTask = Def.task {
+    implicit val l = streams.value.log
     executeTasks(name.value,
                  Seq(
                    ("Compile", compile.result.value),
@@ -49,17 +53,18 @@ object SbtNotifyPlugin extends AutoPlugin {
   }
 
   @tailrec
-  private[this] def executeTasks(project: String,
-                                 tasks: Seq[(String, Result[_])]): Unit = {
+  private[this] def executeTasks(
+      project: String,
+      tasks: Seq[(String, Result[_])])(implicit l: Logger): Unit = {
     tasks match {
       case h :: Nil => // Last task in queue
         h._2 match {
-          case _: Inc => notifyFail(project, h._1)
-          case _: Value[_] => notifySuccess(project, h._1)
+          case _: Inc => notifyFail(l)(project, h._1)
+          case _: Value[_] => notifySuccess(l)(project, h._1)
         }
       case h :: t => // Something in queue
         h._2 match {
-          case _: Inc => notifyFail(project, h._1)
+          case _: Inc => notifyFail(l)(project, h._1)
           case _: Value[_] => executeTasks(project, t)
         }
     }
@@ -68,9 +73,20 @@ object SbtNotifyPlugin extends AutoPlugin {
   lazy val successPair: (Char, String) = ('\u2714', "Glass")
   lazy val failPair: (Char, String) = ('\u2717', "Glass")
 
-  private[this] def notify(successful: Boolean)(project: String,
-                                                action: String): Unit = {
-    val (resultMark, resultSound) = if (successful) successPair else failPair
+  private[this] def notify(l: Logger)(
+      success: Boolean)(project: String, action: String): Unit = {
+    sys.props("os.name") match {
+      case "Mac OS S" => notifyOSX(success, project, action)
+      case "Linux" => notifyLinux(success, project, action)
+      case other => l.error(s"$other platform is not supported yet")
+    }
+  }
+  private[this] def notifySuccess(l: Logger) = notify(l)(success = true) _
+  private[this] def notifyFail(l: Logger) = notify(l)(success = false) _
+  private[this] def notifyOSX(success: Boolean,
+                              project: String,
+                              action: String): Unit = {
+    val (resultMark, resultSound) = if (success) successPair else failPair
     Process(
       Seq(
         "osascript",
@@ -80,6 +96,24 @@ object SbtNotifyPlugin extends AutoPlugin {
         "display notification \"" + action + " completed!\" with title \"" + resultMark + " " + action + "\" subtitle \"" + project + "\" sound name \"" + resultSound + "\"")
     ).!
   }
-  private[this] def notifySuccess = notify(successful = true) _
-  private[this] def notifyFail = notify(successful = false) _
+  private[this] def notifyLinux(success: Boolean,
+                                project: String,
+                                action: String): Unit = {
+    val (resultMark, _) = if (success) successPair else failPair
+    try {
+      Process(
+        Seq(
+          "notify-send",
+          "-a",
+          project,
+          "-i",
+          if (success) "dialog-information" else "dialog-error",
+          project + " => " + action + " " + resultMark,
+          action + " completed!"
+        )
+      ).!
+    } catch {
+      case e: IOException =>
+    }
+  }
 }
